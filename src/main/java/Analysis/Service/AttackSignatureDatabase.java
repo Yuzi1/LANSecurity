@@ -1,26 +1,23 @@
 package Analysis.Service;
 
 import Meta.AttackSignature;
+
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-// 攻击特征库
+//攻击特征库（保留关键签名，CNN补充检测）
 public class AttackSignatureDatabase {
     private Map<String, AttackSignature> signatures = new ConcurrentHashMap<>();
-    private static final String SQL_INJECTION_PATTERN =
-            "(?i)(union.*select|sleep\\(\\s*\\d|benchmark\\s*\\(|\\bexec\\b|\\bxp_cmdshell\\b)";
 
     public AttackSignatureDatabase() {
-        // 初始化已知攻击特征
+        // 仅保留高确定性规则（如SQL注入基础特征）
         addSignature(new AttackSignature(
                 "SQLI-001",
-                "SQL Injection Detection",
-                Pattern.compile(SQL_INJECTION_PATTERN),
-                5 // 严重等级
+                "Basic SQL Injection",
+                Pattern.compile("(?i)(union\\s+select|sleep\\s*\\(|benchmark\\s*\\()"),
+                5
         ));
     }
 
@@ -31,12 +28,11 @@ public class AttackSignatureDatabase {
     public List<AttackMatch> analyzePayload(String payload) {
         List<AttackMatch> matches = new ArrayList<>();
         for (AttackSignature sig : signatures.values()) {
-            Matcher matcher = sig.getPattern().matcher(payload);
-            if (matcher.find()) {
+            if (sig.getPattern().matcher(payload).find()) {
                 matches.add(new AttackMatch(
                         sig.getId(),
                         sig.getDescription(),
-                        matcher.group(),
+                        "Matched pattern",
                         sig.getSeverity()
                 ));
             }

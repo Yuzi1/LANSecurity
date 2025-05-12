@@ -1,81 +1,50 @@
 package Analysis.Rule;
 
 import Analysis.Service.BaselineService;
+import DeepLearning.anomaly.AutoencoderModel;
+import DeepLearning.utils.TensorUtils;
+import org.nd4j.linalg.api.ndarray.INDArray;
 
-import java.util.HashMap;
 import java.util.Map;
 
-// 流量统计异常检测规则
-public class TrafficAnomalyRule extends AbstractRule{
+//流量异常检测规则（混合统计基线 + 自编码器）
+public class TrafficAnomalyRule extends AbstractRule {
     private BaselineService baselineService;
+    private AutoencoderModel autoencoder;
+    private static final double AE_THRESHOLD = 1.5; // 自编码器重构误差阈值
 
-    public TrafficAnomalyRule(BaselineService baselineService) {
+    public TrafficAnomalyRule(BaselineService baselineService, AutoencoderModel autoencoder) {
         super("RULE_TRAFFIC_ANOMALY", "Traffic Anomaly Detection",
-                "Detects traffic volume that deviates significantly from the baseline", 100);
+                "Detects anomalies using baseline and autoencoder", 100);
         this.baselineService = baselineService;
+        this.autoencoder = autoencoder;
     }
 
     @Override
     public RuleResult evaluate(RuleContext context) {
-        // 获取当前流量统计
         Map<String, Double> currentStats = context.getFact("current_traffic_stats", Map.class);
-        if (currentStats == null || currentStats.isEmpty()) {
-            return RuleResult.notTriggered(getId(), getName());
-        }
+        if (currentStats == null) return RuleResult.notTriggered(getId(), getName());
 
-        boolean anomalyDetected = false;
-        StringBuilder messageBuilder = new StringBuilder();
-        Map<String, Object> anomalyDetails = new HashMap<>();
+        // 传统统计检测
+        boolean baselineAnomaly = currentStats.entrySet().stream()
+                .anyMatch(e -> baselineService.isAnomaly(e.getKey(), e.getValue()));
 
-        // 检查各指标是否异常
-        for (Map.Entry<String, Double> entry : currentStats.entrySet()) {
-            String metricKey = entry.getKey();
-            double currentValue = entry.getValue();
+        // 自编码器检测
+        INDArray features = TensorUtils.convertToAutoencoderInput(currentStats);
+        double aeScore = autoencoder.detectAnomaly(features);
+        boolean aeAnomaly = aeScore > AE_THRESHOLD;
 
-            if (baselineService.isAnomaly(metricKey, currentValue)) {
-                anomalyDetected = true;
-                double[] range = baselineService.getNormalRange(metricKey);
+        if (baselineAnomaly || aeAnomaly) {
+            String message = "Traffic anomaly detected: ";
+            if (baselineAnomaly) message += "Baseline deviation; ";
+            if (aeAnomaly) message += String.format("Autoencoder score (%.2f)", aeScore);
 
-                String anomalyType = currentValue > range[1] ? "increase" : "decrease";
-                String detail = String.format("%s shows abnormal %s: %.2f (normal range: [%.2f, %.2f])",
-                        formatMetricName(metricKey), anomalyType, currentValue, range[0], range[1]);
-
-                if (messageBuilder.length() > 0) {
-                    messageBuilder.append("; ");
-                }
-                messageBuilder.append(detail);
-
-                // 添加详细信息
-                Map<String, Object> metricDetails = new HashMap<>();
-                metricDetails.put("current", currentValue);
-                metricDetails.put("normalRange", range);
-                metricDetails.put("anomalyType", anomalyType);
-                anomalyDetails.put(metricKey, metricDetails);
-            }
-        }
-
-        if (anomalyDetected) {
-            RuleResult result = RuleResult.triggered(getId(), getName(),
-                    "Traffic anomaly detected: " + messageBuilder.toString(), 3);
-            result.addAdditionalInfo("details", anomalyDetails);
+            RuleResult result = RuleResult.triggered(getId(), getName(), message.trim(),
+                    aeAnomaly ? 4 : 3); // 自编码器检测赋予更高严重性
+            result.addAdditionalInfo("ae_score", aeScore);
             return result;
         }
 
         return RuleResult.notTriggered(getId(), getName());
-    }
-
-    private String formatMetricName(String metricKey) {
-        // 将指标键名转换为可读的名称
-        switch (metricKey) {
-            case "total_packets":
-                return "Total packet rate";
-            case "total_bytes":
-                return "Total traffic volume";
-            default:
-                if (metricKey.startsWith("protocol_")) {
-                    return metricKey.substring(9) + " traffic";
-                }
-                return metricKey;
-        }
     }
 }
